@@ -9,6 +9,7 @@ import enum
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+import time
 import torch
 from classy_vision.dataset import ClassyDataset, build_dataset
 from classy_vision.generic.distributed_util import (
@@ -807,18 +808,40 @@ class ClassificationTask(ClassyTask):
     def on_start(self, local_variables):
         self.run_hooks(local_variables, ClassyHookFunctions.on_start.name)
 
+        self.perf_log = []
+
     def on_phase_start(self, local_variables):
+        self.phase_start_time_total = time.perf_counter()
+
         self.advance_phase()
 
         self.run_hooks(local_variables, ClassyHookFunctions.on_phase_start.name)
 
+        self.phase_start_time_train = time.perf_counter()
+
     def on_phase_end(self, local_variables):
+        self.log_phase_end("train")
+
         logging.info("Syncing meters on phase end...")
         for meter in self.meters:
             meter.sync_state()
         logging.info("...meters synced")
         barrier()
+
         self.run_hooks(local_variables, ClassyHookFunctions.on_phase_end.name)
+
+        self.log_phase_end("total")
 
     def on_end(self, local_variables):
         self.run_hooks(local_variables, ClassyHookFunctions.on_end.name)
+
+    def log_phase_end(self, tag):
+        if not self.train:
+            return
+
+        assert self.phase_type == "train"
+
+        start_time = self.phase_start_time_train if tag == "train" else self.phase_start_time_total
+        phase_duration = time.perf_counter() - self.phase_start_time_train
+        im_per_sec = (self.get_global_batchsize() * len(self.dataloaders[self.phase_type])) / phase_duration
+        self.perf_log.append(dict(tag=tag, phase_idx=self.train_phase_idx, epoch_duration=phase_duration, im_per_sec=im_per_sec))
